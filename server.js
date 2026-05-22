@@ -1,177 +1,211 @@
 const express = require('express');
-const admin = require('firebase-admin');
-
 const app = express();
 app.use(express.json());
 
-// ── Firebase Admin — lee las variables de Railway ───────────────
-admin.initializeApp({
-  credential: admin.credential.cert({
-    projectId:   process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey:  process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  }),
-});
-
-const db = admin.firestore();
-
+// ── Configuración ────────────────────────────────────────────────
 const TOKEN_RETIROS  = '8668269684:AAHES_9m1QGAXEkAg8KR1TfTLKwgKMiien0';
 const TOKEN_RECARGAS = '8674509022:AAG7WO6PUThf6ddFpZiXQW4sHOL3QQRkMBs';
 const CHAT_ID        = '6837082259';
 
-async function answerCallback(token, callbackQueryId, text) {
+const FIREBASE_PROJECT = 'sapom-99355';
+const FIREBASE_API_KEY = 'AIzaSyAv7_CG2OUGKaZyn7Ngt_-WcuawJn2ZLHs';
+const DB_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents`;
+
+// ── Firebase REST helpers ────────────────────────────────────────
+async function getDoc(path) {
+  const res = await fetch(`${DB_URL}/${path}?key=${FIREBASE_API_KEY}`);
+  if (!res.ok) throw new Error(`getDoc failed: ${res.status}`);
+  return res.json();
+}
+
+async function updateDoc(path, fields) {
+  const body = { fields: {} };
+  for (const [k, v] of Object.entries(fields)) {
+    if (typeof v === 'string')  body.fields[k] = { stringValue: v };
+    if (typeof v === 'number')  body.fields[k] = { doubleValue: v };
+  }
+  const fieldPaths = Object.keys(fields).join(',');
+  const res = await fetch(
+    `${DB_URL}/${path}?key=${FIREBASE_API_KEY}&updateMask.fieldPaths=${Object.keys(fields).join('&updateMask.fieldPaths=')}`,
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+  if (!res.ok) throw new Error(`updateDoc failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+async function addDoc(path, fields) {
+  const body = { fields: {} };
+  for (const [k, v] of Object.entries(fields)) {
+    if (typeof v === 'string') body.fields[k] = { stringValue: v };
+    if (typeof v === 'number') body.fields[k] = { doubleValue: v };
+  }
+  body.fields['fecha'] = { timestampValue: new Date().toISOString() };
+  const res = await fetch(
+    `${DB_URL}/${path}?key=${FIREBASE_API_KEY}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+  if (!res.ok) throw new Error(`addDoc failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+async function queryDocs(path, field, op, value) {
+  const body = {
+    structuredQuery: {
+      from: [{ collectionId: path.split('/').pop() }],
+      where: { fieldFilter: { field: { fieldPath: field }, op, value: { stringValue: value } } },
+      orderBy: [{ field: { fieldPath: 'fecha' }, direction: 'DESCENDING' }],
+      limit: 1
+    }
+  };
+  const parentPath = path.split('/').slice(0, -1).join('/');
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents:runQuery?key=${FIREBASE_API_KEY}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, parent: `projects/${FIREBASE_PROJECT}/databases/(default)/documents/${parentPath}` }) }
+  );
+  if (!res.ok) throw new Error(`query failed: ${res.status}`);
+  return res.json();
+}
+
+function getField(doc, field) {
+  const f = doc.fields?.[field];
+  if (!f) return null;
+  return f.stringValue ?? f.doubleValue ?? f.integerValue ?? f.booleanValue ?? null;
+}
+
+// ── Telegram helpers ─────────────────────────────────────────────
+async function answerCallback(token, id, text) {
   await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: callbackQueryId, text, show_alert: true }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ callback_query_id: id, text, show_alert: true })
   });
 }
 
 async function sendMessage(token, chatId, text) {
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text })
   });
 }
 
-async function editMessageReplyMarkup(token, chatId, messageId) {
+async function editMarkup(token, chatId, msgId) {
   await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }),
-  });
-}
-
-async function agregarHistorial(uid, tipo, monto, extra = {}) {
-  await db.collection('usuarios').doc(uid).collection('historial').add({
-    tipo, monto,
-    fecha: admin.firestore.FieldValue.serverTimestamp(),
-    ...extra,
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [] } })
   });
 }
 
 // ════════════════════════════════════════════════════════════════
-// WEBHOOK — BOT DE RECARGAS
+// WEBHOOK RECARGAS
 // ════════════════════════════════════════════════════════════════
 app.post('/webhook/recargas', async (req, res) => {
   res.sendStatus(200);
-  const body = req.body;
-  if (!body.callback_query) return;
+  const cq = req.body?.callback_query;
+  if (!cq) return;
 
-  const cq = body.callback_query;
   const [action, docId] = cq.data.split(':');
   const msgId = cq.message.message_id;
-
   if (!['recarga_aprobar', 'recarga_rechazar'].includes(action)) return;
 
   try {
-    const recargaRef  = db.collection('recargas_pendientes').doc(docId);
-    const recargaSnap = await recargaRef.get();
+    const snap    = await getDoc(`recargas_pendientes/${docId}`);
+    const estado  = getField(snap, 'estado');
+    const uid     = getField(snap, 'uid');
+    const monto   = parseFloat(getField(snap, 'monto'));
+    const usuario = getField(snap, 'usuario');
 
-    if (!recargaSnap.exists) {
-      await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Solicitud no encontrada'); return;
-    }
-    const recarga = recargaSnap.data();
-    if (recarga.estado !== 'pendiente') {
+    if (estado !== 'pendiente') {
       await answerCallback(TOKEN_RECARGAS, cq.id, '⚠️ Ya fue procesada'); return;
     }
 
     if (action === 'recarga_aprobar') {
-      const usuarioRef  = db.collection('usuarios').doc(recarga.uid);
-      const usuarioSnap = await usuarioRef.get();
-      if (!usuarioSnap.exists) {
-        await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Usuario no encontrado'); return;
-      }
-      const nuevoSaldo = parseFloat(((usuarioSnap.data().saldo || 0) + recarga.monto).toFixed(2));
-      await usuarioRef.update({ saldo: nuevoSaldo });
+      // Obtener saldo actual
+      const userSnap   = await getDoc(`usuarios/${uid}`);
+      const saldoActual = parseFloat(getField(userSnap, 'saldo') || 0);
+      const nuevoSaldo  = parseFloat((saldoActual + monto).toFixed(2));
 
-      const histSnap = await db.collection('usuarios').doc(recarga.uid).collection('historial')
-        .where('tipo', '==', 'recarga_pendiente').where('monto', '==', recarga.monto)
-        .orderBy('fecha', 'desc').limit(1).get();
-      if (!histSnap.empty) await histSnap.docs[0].ref.update({ tipo: 'recarga' });
-      else await agregarHistorial(recarga.uid, 'recarga', recarga.monto);
+      // Actualizar saldo
+      await updateDoc(`usuarios/${uid}`, { saldo: nuevoSaldo });
 
-      await recargaRef.update({ estado: 'aprobada' });
-      await answerCallback(TOKEN_RECARGAS, cq.id, `✅ Recarga aprobada — $${recarga.monto.toFixed(2)} añadidos`);
-      await editMessageReplyMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
+      // Agregar historial
+      await addDoc(`usuarios/${uid}/historial`, { tipo: 'recarga', monto });
+
+      // Marcar aprobada
+      await updateDoc(`recargas_pendientes/${docId}`, { estado: 'aprobada' });
+
+      await answerCallback(TOKEN_RECARGAS, cq.id, `✅ Recarga aprobada — $${monto.toFixed(2)} añadidos`);
+      await editMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
       await sendMessage(TOKEN_RECARGAS, CHAT_ID,
-        `✅ RECARGA APROBADA\n👤 ${recarga.usuario}\n💰 +$${recarga.monto.toFixed(2)} MXN añadidos al saldo`);
+        `✅ RECARGA APROBADA\n👤 ${usuario}\n💰 +$${monto.toFixed(2)} MXN añadidos al saldo`);
 
     } else {
-      const histSnap = await db.collection('usuarios').doc(recarga.uid).collection('historial')
-        .where('tipo', '==', 'recarga_pendiente').where('monto', '==', recarga.monto)
-        .orderBy('fecha', 'desc').limit(1).get();
-      if (!histSnap.empty) await histSnap.docs[0].ref.update({ tipo: 'recarga_rechazada' });
-      else await agregarHistorial(recarga.uid, 'recarga_rechazada', recarga.monto);
+      await addDoc(`usuarios/${uid}/historial`, { tipo: 'recarga_rechazada', monto });
+      await updateDoc(`recargas_pendientes/${docId}`, { estado: 'rechazada' });
 
-      await recargaRef.update({ estado: 'rechazada' });
-      await answerCallback(TOKEN_RECARGAS, cq.id, `❌ Recarga rechazada para ${recarga.usuario}`);
-      await editMessageReplyMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
+      await answerCallback(TOKEN_RECARGAS, cq.id, `❌ Recarga rechazada`);
+      await editMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
       await sendMessage(TOKEN_RECARGAS, CHAT_ID,
-        `❌ RECARGA RECHAZADA\n👤 ${recarga.usuario}\n💰 $${recarga.monto.toFixed(2)} MXN — Saldo NO modificado`);
+        `❌ RECARGA RECHAZADA\n👤 ${usuario}\n💰 $${monto.toFixed(2)} MXN — Saldo NO modificado`);
     }
 
   } catch (err) {
-    console.error('Error webhook recargas:', err);
-    await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Error interno del servidor');
+    console.error('Error webhook recargas:', err.message);
+    await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Error: ' + err.message);
   }
 });
 
 // ════════════════════════════════════════════════════════════════
-// WEBHOOK — BOT DE RETIROS
+// WEBHOOK RETIROS
 // ════════════════════════════════════════════════════════════════
 app.post('/webhook/retiros', async (req, res) => {
   res.sendStatus(200);
-  const body = req.body;
-  if (!body.callback_query) return;
+  const cq = req.body?.callback_query;
+  if (!cq) return;
 
-  const cq = body.callback_query;
   const [action, docId] = cq.data.split(':');
   const msgId = cq.message.message_id;
-
   if (!['retiro_aprobar', 'retiro_rechazar'].includes(action)) return;
 
   try {
-    const retiroRef  = db.collection('retiros_pendientes').doc(docId);
-    const retiroSnap = await retiroRef.get();
+    const snap    = await getDoc(`retiros_pendientes/${docId}`);
+    const estado  = getField(snap, 'estado');
+    const uid     = getField(snap, 'uid');
+    const monto   = parseFloat(getField(snap, 'monto'));
+    const recibe  = parseFloat(getField(snap, 'recibe'));
+    const usuario = getField(snap, 'usuario');
+    const cuenta  = getField(snap, 'cuenta');
+    const nombre  = getField(snap, 'nombre');
 
-    if (!retiroSnap.exists) {
-      await answerCallback(TOKEN_RETIROS, cq.id, '❌ Solicitud no encontrada'); return;
-    }
-    const retiro = retiroSnap.data();
-    if (retiro.estado !== 'pendiente') {
+    if (estado !== 'pendiente') {
       await answerCallback(TOKEN_RETIROS, cq.id, '⚠️ Ya fue procesada'); return;
     }
 
     if (action === 'retiro_aprobar') {
-      await retiroRef.update({ estado: 'aprobado' });
-      await answerCallback(TOKEN_RETIROS, cq.id,
-        `✅ Retiro aprobado — $${retiro.recibe.toFixed(2)} MXN a pagar a ${retiro.usuario}`);
-      await editMessageReplyMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
+      await updateDoc(`retiros_pendientes/${docId}`, { estado: 'aprobado' });
+
+      await answerCallback(TOKEN_RETIROS, cq.id, `✅ Retiro aprobado — $${recibe.toFixed(2)} a pagar`);
+      await editMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
       await sendMessage(TOKEN_RETIROS, CHAT_ID,
-        `✅ RETIRO APROBADO\n👤 ${retiro.usuario}\n🏦 Cuenta: ${retiro.cuenta}\n👤 Titular: ${retiro.nombre}\n💸 A pagar: $${retiro.recibe.toFixed(2)} MXN`);
+        `✅ RETIRO APROBADO\n👤 ${usuario}\n🏦 Cuenta: ${cuenta}\n👤 Titular: ${nombre}\n💸 A pagar: $${recibe.toFixed(2)} MXN`);
 
     } else {
-      const usuarioRef  = db.collection('usuarios').doc(retiro.uid);
-      const usuarioSnap = await usuarioRef.get();
-      if (!usuarioSnap.exists) {
-        await answerCallback(TOKEN_RETIROS, cq.id, '❌ Usuario no encontrado'); return;
-      }
-      const saldoDevuelto = parseFloat(((usuarioSnap.data().saldo || 0) + retiro.monto).toFixed(2));
-      await usuarioRef.update({ saldo: saldoDevuelto });
-      await agregarHistorial(retiro.uid, 'recarga', retiro.monto, { nota: 'Devolución por retiro rechazado' });
-      await retiroRef.update({ estado: 'rechazado' });
-      await answerCallback(TOKEN_RETIROS, cq.id,
-        `❌ Retiro rechazado — $${retiro.monto.toFixed(2)} MXN devueltos a ${retiro.usuario}`);
-      await editMessageReplyMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
+      // Devolver saldo
+      const userSnap    = await getDoc(`usuarios/${uid}`);
+      const saldoActual = parseFloat(getField(userSnap, 'saldo') || 0);
+      const saldoNuevo  = parseFloat((saldoActual + monto).toFixed(2));
+
+      await updateDoc(`usuarios/${uid}`, { saldo: saldoNuevo });
+      await addDoc(`usuarios/${uid}/historial`, { tipo: 'recarga', monto, nota: 'Devolución retiro rechazado' });
+      await updateDoc(`retiros_pendientes/${docId}`, { estado: 'rechazado' });
+
+      await answerCallback(TOKEN_RETIROS, cq.id, `❌ Retiro rechazado — $${monto.toFixed(2)} devueltos`);
+      await editMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
       await sendMessage(TOKEN_RETIROS, CHAT_ID,
-        `❌ RETIRO RECHAZADO\n👤 ${retiro.usuario}\n💰 $${retiro.monto.toFixed(2)} MXN devueltos a su saldo`);
+        `❌ RETIRO RECHAZADO\n👤 ${usuario}\n💰 $${monto.toFixed(2)} MXN devueltos a su saldo`);
     }
 
   } catch (err) {
-    console.error('Error webhook retiros:', err);
-    await answerCallback(TOKEN_RETIROS, cq.id, '❌ Error interno del servidor');
+    console.error('Error webhook retiros:', err.message);
+    await answerCallback(TOKEN_RETIROS, cq.id, '❌ Error: ' + err.message);
   }
 });
 
