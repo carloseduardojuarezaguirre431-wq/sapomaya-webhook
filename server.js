@@ -4,23 +4,21 @@ const admin = require('firebase-admin');
 const app = express();
 app.use(express.json());
 
-// ── Firebase Admin Init ──────────────────────────────────────────
+// ── Firebase Admin — lee las variables de Railway ───────────────
 admin.initializeApp({
   credential: admin.credential.cert({
-    projectId:   'sapom-99355',
-    clientEmail: 'firebase-adminsdk-fbsvc@sapom-99355.iam.gserviceaccount.com',
-    privateKey:  '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCojpBoffnukiDR\nbz9xiQ7Qk7TT3H+lsbUWvyAeyeLkVcJXiWB00pXJ8YkyUjeXohu5KPHacIEkeQSs\nVie5VUOhRHhg2w/hggkcvPjA7MlN2UcD43WpZzFcU/7bv/rChNuqa+a2eykCfOuC\nahlzxVplaYhkiw7K88judTOl+oo4blnHv+obbOjKT7lspScNo2V61ltwANy8H1jJ\nTaSHkbI/kE5nChCaL765Caka+DBvWLDBiycSTjleZhCLujp5VtCzQXSmXcLfIgr5\nCanRijf5P76BCFRupD+oKPh7kCK2lysKuTFo9RbuXX9+hLqqU9FTGdbvHBVayFhl\nrcAcvzBzAgMBAAECggEAAdgVcl82dcq5ezEZY5eZRuTmzI6UAu8PySDsLAoPZmod\nxzFkkcKgCuaOlrNZkloerYbqJnamowyD5ZLHunpZVBFYs86RvOjcSqkym4G7rhNb\neIprhh/v5U+x8RuHlcs4UAQAMSzlxPYy6WlZv+9/zq455Me0sLm8EAfOOdmk23st\nCTRZF6qd3wYt5m61Cc9e48MfECK9PXQus/xJ66O0qutWbVVNJsnY7UvhdztvfZNk\nCXHuZbs/8epYutTELKd2EcoBLJcJhISFhxhbWBafe5KOlNjNLcpDag9q3VSvGOEH\nB5vvq2vTE4YnkSz0X49UhaqwP5oaq8WDS4mC9SvtQQKBgQDadszA91ipzp4RU+q4\nYjufxKSqCkc+0MAXn1PEZeXHVySH7dooEBBiajuXK2J5c3hHp2rT3wItuuO/wWfW\n7G7pNG+ro+BcwOYi3ov7EWLI6WpHNvGqSiFsC6U35zQ4kGrlaz25mmec9L6OeMyH\nHTGWoAiPAWREutPBjmdfHDkwIQKBgQDFhJWCZYWYA+NQC6hpfHyWiNh+mv6/xQSC\ncWM8oaBh7+rCTnBcMIFKwumltiLYirx8zE1eY5+1iEUH49oQNY90y46sl00o3Zhd\nWbqUhwnzz+iw/HkzCTfGSQbQYRsjEzSEPDyHY57LQalDYaaCoZdPaLoxVMcSAhOg\n0f0CJETeEwKBgQDU7xJnyy7qY++BqC+SBH1lHn/5FQeYXFO/MpatSTyL7Y43x0fp\n4K53nl/y2mCjTD8iaDYhyK4Q8KZoExUpUU5Rk8B8pcBb59Doj84Uqz+D4K6sNwua\nFaM58qfZM0udDnaCouKI88ymGY9awrdnwrbAv79X091teERJ1ok/FP1QwQKBgF05\nWqeU6xz4mM0q8232R4d1R1laJmq0vpAinEf9sQkIh7D1/KpGan+yxzxjXsb9lEEC\n3HF0a+juTEaREFceMHtbqBdlwhFLpaJJu3pm0he1RYpjX4DrFNwNk52+d2RyqBLR\nq2/rYQNmFlGrQT/erN/Z+idWcC7btA/vjI76N1bpAoGADrJv7ZFN0LeHRo6SbpB6\nPRdA21px0K+EGqbAGmKSQv7Z63ieStJstyEg/e2f9tksFA5IX6jpcnmt8pAT/uo7\nWJoY7zKBIzcxXQFQYrjS980GoGg3F+4TNmAk7AGA/khDYQTsaqghGg+b1QNJyb5f\nInUBtBCXA6VRomovnepY/yM=\n-----END PRIVATE KEY-----\n',
+    projectId:   process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey:  process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
   }),
 });
 
 const db = admin.firestore();
 
-// ── Tokens de los bots ───────────────────────────────────────────
 const TOKEN_RETIROS  = '8668269684:AAHES_9m1QGAXEkAg8KR1TfTLKwgKMiien0';
 const TOKEN_RECARGAS = '8674509022:AAG7WO6PUThf6ddFpZiXQW4sHOL3QQRkMBs';
 const CHAT_ID        = '6837082259';
 
-// ── Helper: responder callback de Telegram ──────────────────────
 async function answerCallback(token, callbackQueryId, text) {
   await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
     method: 'POST',
@@ -29,7 +27,6 @@ async function answerCallback(token, callbackQueryId, text) {
   });
 }
 
-// ── Helper: enviar mensaje de Telegram ──────────────────────────
 async function sendMessage(token, chatId, text) {
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
@@ -38,7 +35,6 @@ async function sendMessage(token, chatId, text) {
   });
 }
 
-// ── Helper: editar mensaje (quitar botones) ──────────────────────
 async function editMessageReplyMarkup(token, chatId, messageId) {
   await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
     method: 'POST',
@@ -47,11 +43,9 @@ async function editMessageReplyMarkup(token, chatId, messageId) {
   });
 }
 
-// ── Helper: agregar historial al usuario ────────────────────────
 async function agregarHistorial(uid, tipo, monto, extra = {}) {
   await db.collection('usuarios').doc(uid).collection('historial').add({
-    tipo,
-    monto,
+    tipo, monto,
     fecha: admin.firestore.FieldValue.serverTimestamp(),
     ...extra,
   });
@@ -61,15 +55,13 @@ async function agregarHistorial(uid, tipo, monto, extra = {}) {
 // WEBHOOK — BOT DE RECARGAS
 // ════════════════════════════════════════════════════════════════
 app.post('/webhook/recargas', async (req, res) => {
-  res.sendStatus(200); // responder rápido a Telegram
-
+  res.sendStatus(200);
   const body = req.body;
   if (!body.callback_query) return;
 
-  const cq       = body.callback_query;
-  const data     = cq.data;           // "recarga_aprobar:ID" | "recarga_rechazar:ID"
-  const msgId    = cq.message.message_id;
-  const [action, docId] = data.split(':');
+  const cq = body.callback_query;
+  const [action, docId] = cq.data.split(':');
+  const msgId = cq.message.message_id;
 
   if (!['recarga_aprobar', 'recarga_rechazar'].includes(action)) return;
 
@@ -78,87 +70,50 @@ app.post('/webhook/recargas', async (req, res) => {
     const recargaSnap = await recargaRef.get();
 
     if (!recargaSnap.exists) {
-      await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Solicitud no encontrada');
-      return;
+      await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Solicitud no encontrada'); return;
     }
-
     const recarga = recargaSnap.data();
-
     if (recarga.estado !== 'pendiente') {
-      await answerCallback(TOKEN_RECARGAS, cq.id, '⚠️ Esta solicitud ya fue procesada');
-      return;
+      await answerCallback(TOKEN_RECARGAS, cq.id, '⚠️ Ya fue procesada'); return;
     }
 
     if (action === 'recarga_aprobar') {
-      // 1. Sumar saldo al usuario
       const usuarioRef  = db.collection('usuarios').doc(recarga.uid);
       const usuarioSnap = await usuarioRef.get();
-
       if (!usuarioSnap.exists) {
-        await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Usuario no encontrado en la base de datos');
-        return;
+        await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Usuario no encontrado'); return;
       }
-
-      const saldoActual = usuarioSnap.data().saldo || 0;
-      const nuevoSaldo  = parseFloat((saldoActual + recarga.monto).toFixed(2));
-
+      const nuevoSaldo = parseFloat(((usuarioSnap.data().saldo || 0) + recarga.monto).toFixed(2));
       await usuarioRef.update({ saldo: nuevoSaldo });
 
-      // 2. Actualizar historial: cambiar recarga_pendiente → recarga
-      const histSnap = await db
-        .collection('usuarios').doc(recarga.uid)
-        .collection('historial')
-        .where('tipo', '==', 'recarga_pendiente')
-        .where('monto', '==', recarga.monto)
-        .orderBy('fecha', 'desc')
-        .limit(1)
-        .get();
+      const histSnap = await db.collection('usuarios').doc(recarga.uid).collection('historial')
+        .where('tipo', '==', 'recarga_pendiente').where('monto', '==', recarga.monto)
+        .orderBy('fecha', 'desc').limit(1).get();
+      if (!histSnap.empty) await histSnap.docs[0].ref.update({ tipo: 'recarga' });
+      else await agregarHistorial(recarga.uid, 'recarga', recarga.monto);
 
-      if (!histSnap.empty) {
-        await histSnap.docs[0].ref.update({ tipo: 'recarga' });
-      } else {
-        // Si no existe, crear uno nuevo aprobado
-        await agregarHistorial(recarga.uid, 'recarga', recarga.monto);
-      }
-
-      // 3. Marcar recarga como aprobada
       await recargaRef.update({ estado: 'aprobada' });
-
-      // 4. Responder en Telegram
-      await answerCallback(TOKEN_RECARGAS, cq.id, `✅ Recarga de $${recarga.monto.toFixed(2)} aprobada para ${recarga.usuario}`);
+      await answerCallback(TOKEN_RECARGAS, cq.id, `✅ Recarga aprobada — $${recarga.monto.toFixed(2)} añadidos`);
       await editMessageReplyMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
       await sendMessage(TOKEN_RECARGAS, CHAT_ID,
-        `✅ RECARGA APROBADA\n👤 ${recarga.usuario}\n💰 +$${recarga.monto.toFixed(2)} MXN añadidos`);
+        `✅ RECARGA APROBADA\n👤 ${recarga.usuario}\n💰 +$${recarga.monto.toFixed(2)} MXN añadidos al saldo`);
 
-    } else if (action === 'recarga_rechazar') {
-      // 1. Actualizar historial: cambiar recarga_pendiente → recarga_rechazada
-      const histSnap = await db
-        .collection('usuarios').doc(recarga.uid)
-        .collection('historial')
-        .where('tipo', '==', 'recarga_pendiente')
-        .where('monto', '==', recarga.monto)
-        .orderBy('fecha', 'desc')
-        .limit(1)
-        .get();
+    } else {
+      const histSnap = await db.collection('usuarios').doc(recarga.uid).collection('historial')
+        .where('tipo', '==', 'recarga_pendiente').where('monto', '==', recarga.monto)
+        .orderBy('fecha', 'desc').limit(1).get();
+      if (!histSnap.empty) await histSnap.docs[0].ref.update({ tipo: 'recarga_rechazada' });
+      else await agregarHistorial(recarga.uid, 'recarga_rechazada', recarga.monto);
 
-      if (!histSnap.empty) {
-        await histSnap.docs[0].ref.update({ tipo: 'recarga_rechazada' });
-      } else {
-        await agregarHistorial(recarga.uid, 'recarga_rechazada', recarga.monto);
-      }
-
-      // 2. Marcar como rechazada
       await recargaRef.update({ estado: 'rechazada' });
-
-      // 3. Responder en Telegram
       await answerCallback(TOKEN_RECARGAS, cq.id, `❌ Recarga rechazada para ${recarga.usuario}`);
       await editMessageReplyMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
       await sendMessage(TOKEN_RECARGAS, CHAT_ID,
-        `❌ RECARGA RECHAZADA\n👤 ${recarga.usuario}\n💰 $${recarga.monto.toFixed(2)} MXN — Saldo NO añadido`);
+        `❌ RECARGA RECHAZADA\n👤 ${recarga.usuario}\n💰 $${recarga.monto.toFixed(2)} MXN — Saldo NO modificado`);
     }
 
   } catch (err) {
-    console.error('Error en webhook recargas:', err);
+    console.error('Error webhook recargas:', err);
     await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Error interno del servidor');
   }
 });
@@ -168,14 +123,12 @@ app.post('/webhook/recargas', async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 app.post('/webhook/retiros', async (req, res) => {
   res.sendStatus(200);
-
   const body = req.body;
   if (!body.callback_query) return;
 
-  const cq       = body.callback_query;
-  const data     = cq.data;
-  const msgId    = cq.message.message_id;
-  const [action, docId] = data.split(':');
+  const cq = body.callback_query;
+  const [action, docId] = cq.data.split(':');
+  const msgId = cq.message.message_id;
 
   if (!['retiro_aprobar', 'retiro_rechazar'].includes(action)) return;
 
@@ -184,49 +137,31 @@ app.post('/webhook/retiros', async (req, res) => {
     const retiroSnap = await retiroRef.get();
 
     if (!retiroSnap.exists) {
-      await answerCallback(TOKEN_RETIROS, cq.id, '❌ Solicitud no encontrada');
-      return;
+      await answerCallback(TOKEN_RETIROS, cq.id, '❌ Solicitud no encontrada'); return;
     }
-
     const retiro = retiroSnap.data();
-
     if (retiro.estado !== 'pendiente') {
-      await answerCallback(TOKEN_RETIROS, cq.id, '⚠️ Esta solicitud ya fue procesada');
-      return;
+      await answerCallback(TOKEN_RETIROS, cq.id, '⚠️ Ya fue procesada'); return;
     }
 
     if (action === 'retiro_aprobar') {
-      // El saldo ya fue descontado cuando el usuario solicitó el retiro.
-      // Solo marcamos como aprobado y avisamos.
       await retiroRef.update({ estado: 'aprobado' });
-
       await answerCallback(TOKEN_RETIROS, cq.id,
-        `✅ Retiro aprobado para ${retiro.usuario} — $${retiro.recibe.toFixed(2)} MXN a pagar`);
+        `✅ Retiro aprobado — $${retiro.recibe.toFixed(2)} MXN a pagar a ${retiro.usuario}`);
       await editMessageReplyMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
       await sendMessage(TOKEN_RETIROS, CHAT_ID,
         `✅ RETIRO APROBADO\n👤 ${retiro.usuario}\n🏦 Cuenta: ${retiro.cuenta}\n👤 Titular: ${retiro.nombre}\n💸 A pagar: $${retiro.recibe.toFixed(2)} MXN`);
 
-    } else if (action === 'retiro_rechazar') {
-      // 1. Devolver saldo al usuario
+    } else {
       const usuarioRef  = db.collection('usuarios').doc(retiro.uid);
       const usuarioSnap = await usuarioRef.get();
-
       if (!usuarioSnap.exists) {
-        await answerCallback(TOKEN_RETIROS, cq.id, '❌ Usuario no encontrado');
-        return;
+        await answerCallback(TOKEN_RETIROS, cq.id, '❌ Usuario no encontrado'); return;
       }
-
-      const saldoActual = usuarioSnap.data().saldo || 0;
-      const saldoDevuelto = parseFloat((saldoActual + retiro.monto).toFixed(2));
-
+      const saldoDevuelto = parseFloat(((usuarioSnap.data().saldo || 0) + retiro.monto).toFixed(2));
       await usuarioRef.update({ saldo: saldoDevuelto });
-
-      // 2. Actualizar historial: retiro → retiro_rechazado (devolución)
       await agregarHistorial(retiro.uid, 'recarga', retiro.monto, { nota: 'Devolución por retiro rechazado' });
-
-      // 3. Marcar como rechazado
       await retiroRef.update({ estado: 'rechazado' });
-
       await answerCallback(TOKEN_RETIROS, cq.id,
         `❌ Retiro rechazado — $${retiro.monto.toFixed(2)} MXN devueltos a ${retiro.usuario}`);
       await editMessageReplyMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
@@ -235,12 +170,11 @@ app.post('/webhook/retiros', async (req, res) => {
     }
 
   } catch (err) {
-    console.error('Error en webhook retiros:', err);
+    console.error('Error webhook retiros:', err);
     await answerCallback(TOKEN_RETIROS, cq.id, '❌ Error interno del servidor');
   }
 });
 
-// ── Health check ─────────────────────────────────────────────────
 app.get('/', (req, res) => res.send('🐸 SAPOMAYA Webhook activo'));
 
 const PORT = process.env.PORT || 3000;
