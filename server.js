@@ -5,15 +5,11 @@ const app = express();
 app.use(express.json());
 
 // Lee la private key desde variable de entorno
-// La variable puede venir como JSON {"key":"..."} o como string directo
 let privateKey = process.env.FIREBASE_PRIVATE_KEY || '';
 try {
   const parsed = JSON.parse(privateKey);
   if (parsed.key) privateKey = parsed.key;
-} catch(e) {
-  // No es JSON, usarla directo
-}
-// Reemplazar \n literales por saltos de línea reales
+} catch(e) {}
 privateKey = privateKey.replace(/\\n/g, '\n');
 
 console.log('🔑 Private key starts with:', privateKey.substring(0, 40));
@@ -71,28 +67,50 @@ app.post('/webhook/recargas', async (req, res) => {
   if (!['recarga_aprobar', 'recarga_rechazar'].includes(action)) return;
 
   try {
-    const recargaRef  = db.collection('recargas_pendientes').doc(docId);
-    const recargaSnap = await recargaRef.get();
-    if (!recargaSnap.exists) { await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Solicitud no encontrada'); return; }
-    const recarga = recargaSnap.data();
-    if (recarga.estado !== 'pendiente') { await answerCallback(TOKEN_RECARGAS, cq.id, '⚠️ Ya fue procesada'); return; }
+    const recargaRef = db.collection('recargas_pendientes').doc(docId);
 
-    if (action === 'recarga_aprobar') {
-      const userSnap = await db.collection('usuarios').doc(recarga.uid).get();
-      const nuevoSaldo = parseFloat(((userSnap.data().saldo || 0) + recarga.monto).toFixed(2));
-      await db.collection('usuarios').doc(recarga.uid).update({ saldo: nuevoSaldo });
+    // ── Transacción atómica — evita doble procesamiento ──────────
+    const resultado = await db.runTransaction(async (t) => {
+      const recargaSnap = await t.get(recargaRef);
+      if (!recargaSnap.exists) return { ok: false, msg: '❌ Solicitud no encontrada' };
+      const recarga = recargaSnap.data();
+      if (recarga.estado !== 'pendiente') return { ok: false, msg: '⚠️ Ya fue procesada' };
+
+      if (action === 'recarga_aprobar') {
+        const userRef  = db.collection('usuarios').doc(recarga.uid);
+        const userSnap = await t.get(userRef);
+        if (!userSnap.exists) return { ok: false, msg: '❌ Usuario no encontrado' };
+        const nuevoSaldo = parseFloat(((userSnap.data().saldo || 0) + recarga.monto).toFixed(2));
+        t.update(userRef, { saldo: nuevoSaldo });
+        t.update(recargaRef, { estado: 'aprobada' });
+        return { ok: true, action: 'aprobada', recarga };
+      } else {
+        t.update(recargaRef, { estado: 'rechazada' });
+        return { ok: true, action: 'rechazada', recarga };
+      }
+    });
+
+    if (!resultado.ok) {
+      await answerCallback(TOKEN_RECARGAS, cq.id, resultado.msg);
+      return;
+    }
+
+    const { recarga } = resultado;
+
+    if (resultado.action === 'aprobada') {
       await agregarHistorial(recarga.uid, 'recarga', recarga.monto);
-      await recargaRef.update({ estado: 'aprobada' });
       await answerCallback(TOKEN_RECARGAS, cq.id, `✅ Recarga aprobada — $${recarga.monto.toFixed(2)} añadidos`);
       await editMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
-      await sendMessage(TOKEN_RECARGAS, CHAT_ID, `✅ RECARGA APROBADA\n👤 ${recarga.usuario}\n💰 +$${recarga.monto.toFixed(2)} MXN añadidos al saldo`);
+      await sendMessage(TOKEN_RECARGAS, CHAT_ID,
+        `✅ RECARGA APROBADA\n👤 ${recarga.usuario}\n💰 +$${recarga.monto.toFixed(2)} MXN añadidos al saldo`);
     } else {
       await agregarHistorial(recarga.uid, 'recarga_rechazada', recarga.monto);
-      await recargaRef.update({ estado: 'rechazada' });
       await answerCallback(TOKEN_RECARGAS, cq.id, `❌ Recarga rechazada`);
       await editMarkup(TOKEN_RECARGAS, CHAT_ID, msgId);
-      await sendMessage(TOKEN_RECARGAS, CHAT_ID, `❌ RECARGA RECHAZADA\n👤 ${recarga.usuario}\n💰 $${recarga.monto.toFixed(2)} MXN — Saldo NO modificado`);
+      await sendMessage(TOKEN_RECARGAS, CHAT_ID,
+        `❌ RECARGA RECHAZADA\n👤 ${recarga.usuario}\n💰 $${recarga.monto.toFixed(2)} MXN — Saldo NO modificado`);
     }
+
   } catch (err) {
     console.error('Error webhook recargas:', err.message);
     await answerCallback(TOKEN_RECARGAS, cq.id, '❌ Error: ' + err.message);
@@ -111,27 +129,49 @@ app.post('/webhook/retiros', async (req, res) => {
   if (!['retiro_aprobar', 'retiro_rechazar'].includes(action)) return;
 
   try {
-    const retiroRef  = db.collection('retiros_pendientes').doc(docId);
-    const retiroSnap = await retiroRef.get();
-    if (!retiroSnap.exists) { await answerCallback(TOKEN_RETIROS, cq.id, '❌ Solicitud no encontrada'); return; }
-    const retiro = retiroSnap.data();
-    if (retiro.estado !== 'pendiente') { await answerCallback(TOKEN_RETIROS, cq.id, '⚠️ Ya fue procesada'); return; }
+    const retiroRef = db.collection('retiros_pendientes').doc(docId);
 
-    if (action === 'retiro_aprobar') {
-      await retiroRef.update({ estado: 'aprobado' });
+    // ── Transacción atómica — evita doble procesamiento ──────────
+    const resultado = await db.runTransaction(async (t) => {
+      const retiroSnap = await t.get(retiroRef);
+      if (!retiroSnap.exists) return { ok: false, msg: '❌ Solicitud no encontrada' };
+      const retiro = retiroSnap.data();
+      if (retiro.estado !== 'pendiente') return { ok: false, msg: '⚠️ Ya fue procesada' };
+
+      if (action === 'retiro_aprobar') {
+        t.update(retiroRef, { estado: 'aprobado' });
+        return { ok: true, action: 'aprobado', retiro };
+      } else {
+        const userRef  = db.collection('usuarios').doc(retiro.uid);
+        const userSnap = await t.get(userRef);
+        if (!userSnap.exists) return { ok: false, msg: '❌ Usuario no encontrado' };
+        const saldoNuevo = parseFloat(((userSnap.data().saldo || 0) + retiro.monto).toFixed(2));
+        t.update(userRef, { saldo: saldoNuevo });
+        t.update(retiroRef, { estado: 'rechazado' });
+        return { ok: true, action: 'rechazado', retiro };
+      }
+    });
+
+    if (!resultado.ok) {
+      await answerCallback(TOKEN_RETIROS, cq.id, resultado.msg);
+      return;
+    }
+
+    const { retiro } = resultado;
+
+    if (resultado.action === 'aprobado') {
       await answerCallback(TOKEN_RETIROS, cq.id, `✅ Retiro aprobado — $${retiro.recibe.toFixed(2)} a pagar`);
       await editMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
-      await sendMessage(TOKEN_RETIROS, CHAT_ID, `✅ RETIRO APROBADO\n👤 ${retiro.usuario}\n🏦 Cuenta: ${retiro.cuenta}\n👤 Titular: ${retiro.nombre}\n💸 A pagar: $${retiro.recibe.toFixed(2)} MXN`);
+      await sendMessage(TOKEN_RETIROS, CHAT_ID,
+        `✅ RETIRO APROBADO\n👤 ${retiro.usuario}\n🏦 Cuenta: ${retiro.cuenta}\n👤 Titular: ${retiro.nombre}\n💸 A pagar: $${retiro.recibe.toFixed(2)} MXN`);
     } else {
-      const userSnap = await db.collection('usuarios').doc(retiro.uid).get();
-      const saldoNuevo = parseFloat(((userSnap.data().saldo || 0) + retiro.monto).toFixed(2));
-      await db.collection('usuarios').doc(retiro.uid).update({ saldo: saldoNuevo });
       await agregarHistorial(retiro.uid, 'recarga', retiro.monto, { nota: 'Devolución retiro rechazado' });
-      await retiroRef.update({ estado: 'rechazado' });
       await answerCallback(TOKEN_RETIROS, cq.id, `❌ Retiro rechazado — $${retiro.monto.toFixed(2)} devueltos`);
       await editMarkup(TOKEN_RETIROS, CHAT_ID, msgId);
-      await sendMessage(TOKEN_RETIROS, CHAT_ID, `❌ RETIRO RECHAZADO\n👤 ${retiro.usuario}\n💰 $${retiro.monto.toFixed(2)} MXN devueltos a su saldo`);
+      await sendMessage(TOKEN_RETIROS, CHAT_ID,
+        `❌ RETIRO RECHAZADO\n👤 ${retiro.usuario}\n💰 $${retiro.monto.toFixed(2)} MXN devueltos a su saldo`);
     }
+
   } catch (err) {
     console.error('Error webhook retiros:', err.message);
     await answerCallback(TOKEN_RETIROS, cq.id, '❌ Error: ' + err.message);
